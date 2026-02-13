@@ -185,6 +185,18 @@ CREATE TABLE IF NOT EXISTS users (
 
 conn.commit()
 
+# --- star transactions ---
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS star_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    type TEXT,              -- bonus | withdraw | exchange | referral | checkin
+    description TEXT,
+    created_at INTEGER
+)
+""")
+conn.commit()
 
 # --- withdrawals ---
 cursor.execute("""
@@ -1088,12 +1100,112 @@ async def my_withdraw(callback: CallbackQuery):
         f"{gift_text}\n\n"
         f"📤 Вы можете запросить вывод:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⭐ Запросить вывод звёзд", callback_data="withdraw_stars")],
-            [InlineKeyboardButton(text="📜 История подарков", callback_data="history_gifts")],
-            [InlineKeyboardButton(text="🎁 Запросить выдачу подарка", callback_data="withdraw_gift")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")]
+            [
+                InlineKeyboardButton(text="⭐ Запросить вывод звёзд", callback_data="withdraw_stars")
+            ],
+            [
+                InlineKeyboardButton(text="📜 История подарков", callback_data="history_gifts")
+            ],
+            [
+                InlineKeyboardButton(text="🎁 Запросить выдачу подарка", callback_data="withdraw_gift")
+            ],
+            [
+                InlineKeyboardButton(text="📊 История звёзд", callback_data="history_stars")
+            ],
+            [
+                InlineKeyboardButton(text="📤 История выводов", callback_data="history_withdrawals")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")
+            ]
         ])
 
+    )
+
+    @dp.callback_query(F.data == "history_stars")
+    async def history_stars(callback: CallbackQuery):
+        await safe_answer(callback)
+
+        user_id = callback.from_user.id
+
+        cursor.execute("""
+            SELECT amount, type, description, created_at
+            FROM star_transactions
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+        """, (user_id,))
+
+        rows = cursor.fetchall()
+
+        if not rows:
+            await callback.message.edit_text(
+                "📊 <b>История звёзд</b>\n\nПока нет операций.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="my_withdraw")]
+                ])
+            )
+            return
+
+        text = "📊 <b>История операций со звёздами</b>\n\n"
+
+        for amount, tx_type, description, created_at in rows:
+            date = time.strftime("%d.%m %H:%M", time.localtime(created_at))
+            sign = "➕" if amount > 0 else "➖"
+
+            text += f"{sign} <b>{amount}</b> ⭐\n"
+            text += f"📌 {description}\n"
+            text += f"🕒 {date}\n\n"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="my_withdraw")]
+            ])
+        )
+
+@dp.callback_query(F.data == "history_withdrawals")
+async def history_withdrawals(callback: CallbackQuery):
+    await safe_answer(callback)
+
+    user_id = callback.from_user.id
+
+    cursor.execute("""
+        SELECT type, amount, gift_code, status, created_at
+        FROM withdrawals
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 20
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        await callback.message.edit_text(
+            "📤 <b>История выводов</b>\n\nПока нет заявок.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="my_withdraw")]
+            ])
+        )
+        return
+
+    text = "📤 <b>История выводов</b>\n\n"
+
+    for w_type, amount, gift_code, status, created_at in rows:
+        date = time.strftime("%d.%m %H:%M", time.localtime(created_at))
+
+        if w_type == "stars":
+            text += f"⭐ {amount} — {status}\n"
+        else:
+            text += f"🎁 {gift_name(gift_code)} — {status}\n"
+
+        text += f"🕒 {date}\n\n"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="my_withdraw")]
+        ])
     )
 
 @dp.callback_query(F.data == "history_gifts")

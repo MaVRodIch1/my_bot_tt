@@ -185,6 +185,18 @@ CREATE TABLE IF NOT EXISTS users (
 
 conn.commit()
 
+# --- star transactions ---
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS star_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    type TEXT,              -- bonus | withdraw | exchange | referral | checkin
+    description TEXT,
+    created_at INTEGER
+)
+""")
+conn.commit()
 
 # --- withdrawals ---
 cursor.execute("""
@@ -456,9 +468,16 @@ def get_user_stars(user_id: int) -> int:
     result = cursor.fetchone()
     return result[0] if result else 0
 
-def add_stars(user_id: int, amount: int):
+def add_stars(user_id: int, amount: int, tx_type="bonus", description="Начисление"):
     cursor.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
+
+    cursor.execute("""
+        INSERT INTO star_transactions (user_id, amount, type, description, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, amount, tx_type, description, int(time.time())))
+
     conn.commit()
+
 
 def select_gift(user_id: int, gift_code: str):
     cursor.execute("UPDATE users SET selected_gift = ? WHERE user_id = ?", (gift_code, user_id))
@@ -469,13 +488,20 @@ def get_selected_gift(user_id: int):
     result = cursor.fetchone()
     return result[0] if result else None
 
-def subtract_stars(user_id: int, amount: int) -> bool:
+def subtract_stars(user_id: int, amount: int, tx_type="exchange", description="Списание"):
     stars = get_user_stars(user_id)
     if stars >= amount:
         cursor.execute("UPDATE users SET stars = stars - ? WHERE user_id = ?", (amount, user_id))
+
+        cursor.execute("""
+            INSERT INTO star_transactions (user_id, amount, type, description, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, -amount, tx_type, description, int(time.time())))
+
         conn.commit()
         return True
     return False
+
 
 # --- Keyboards ---
 def build_subscription_keyboard():
