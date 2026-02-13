@@ -184,6 +184,17 @@ CREATE TABLE IF NOT EXISTS users (
 # --- nickname bonus migration ---
 
 conn.commit()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS star_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    type TEXT,
+    description TEXT,
+    created_at INTEGER
+)
+""")
+conn.commit()
 
 # --- star transactions ---
 cursor.execute("""
@@ -262,6 +273,13 @@ if not column_exists(cursor, "users", "nickname_bonus_last"):
 if not column_exists(cursor, "users", "nickname_bonus_blocked_until"):
     cursor.execute("ALTER TABLE users ADD COLUMN nickname_bonus_blocked_until INTEGER DEFAULT 0")
 
+if not column_exists(cursor, "users", "checkin_streak"):
+    cursor.execute("ALTER TABLE users ADD COLUMN checkin_streak INTEGER DEFAULT 0")
+
+if not column_exists(cursor, "users", "last_checkin_date"):
+    cursor.execute("ALTER TABLE users ADD COLUMN last_checkin_date TEXT")
+
+conn.commit()
 
 # --- migrations ---
 try:
@@ -347,42 +365,72 @@ async def exchange_cs_menu(callback: CallbackQuery):
 @dp.callback_query(F.data == "daily_checkin")
 async def daily_checkin(callback: CallbackQuery):
     user_id = callback.from_user.id
-    now = int(time.time())
+    today = datetime.utcnow().date()
 
-    cursor.execute("SELECT last_checkin FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    last_checkin = result[0] if result else 0
+    cursor.execute("""
+        SELECT last_checkin_date, checkin_streak
+        FROM users
+        WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
 
-    # 24 часа = 86400 секунд
-    if now - last_checkin < 86400:
-        remaining = 86400 - (now - last_checkin)
-        hours = remaining // 3600
-        minutes = (remaining % 3600) // 60
-
-        await callback.answer(
-            f"⏳ Чек-ин уже был!\nПопробуй через {hours}ч {minutes}м",
-            show_alert=True
-        )
+    if not row:
         return
 
-    # награда
-    reward = 10
-    add_stars(user_id, reward)
+    last_date_str, streak = row
+    last_date = None
 
-    cursor.execute(
-        "UPDATE users SET last_checkin = ? WHERE user_id = ?",
-        (now, user_id)
-    )
+    if last_date_str:
+        last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+
+    # Уже сегодня чекался
+    if last_date == today:
+        await callback.answer("⏳ Сегодня вы уже делали чек-ин!", show_alert=True)
+        return
+
+    # Проверяем подряд ли день
+    if last_date == today - timedelta(days=1):
+        streak += 1
+    else:
+        streak = 1  # сброс если пропуск
+
+    reward = 10
+    bonus = 0
+
+    # Бонус за 7 дней
+    if streak == 7:
+        bonus = 50
+        reward += bonus
+        streak = 0  # сбрасываем после награды
+
+    # начисляем
+    add_stars(user_id, reward, "checkin", "Ежедневный чек-ин")
+
+    cursor.execute("""
+        UPDATE users
+        SET last_checkin_date = ?, checkin_streak = ?
+        WHERE user_id = ?
+    """, (today.strftime("%Y-%m-%d"), streak, user_id))
+
     conn.commit()
 
+    text = (
+        f"✅ <b>Чек-ин выполнен!</b>\n\n"
+        f"⭐ Получено: <b>{reward}</b>\n"
+        f"🔥 Текущий стрик: <b>{streak}/7</b>"
+        f"🔥 За стрик в 7 дней,вы получите 50 старс"
+    )
+
+    if bonus:
+        text += "\n\n🎉 <b>БОНУС ЗА 7 ДНЕЙ: +50 ⭐</b>"
+
     await callback.message.edit_text(
-        f"✅ <b>Ежедневный чек-ин выполнен!</b>\n\n"
-        f"🎁 Вы получили ⭐{reward} звёзд\n"
-        f"📆 Возвращайтесь завтра за новой наградой!",
+        text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")]
         ])
     )
+
 
 @dp.callback_query(F.data == "my_balance")
 async def handle_my_balance(callback: CallbackQuery):
@@ -468,9 +516,25 @@ def get_user_stars(user_id: int) -> int:
     result = cursor.fetchone()
     return result[0] if result else 0
 
-def add_stars(user_id: int, amount: int):
-    cursor.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
+def add_stars(user_id: int, amount: int, action_type="manual", description=""):
+    cursor.execute(
+        "UPDATE users SET stars = stars + ? WHERE user_id = ?",
+        (amount, user_id)
+    )
+
+    cursor.execute("""
+        INSERT INTO star_history (user_id, amount, type, description, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        amount,
+        action_type,
+        description,
+        int(time.time())
+    ))
+
     conn.commit()
+
 
 def select_gift(user_id: int, gift_code: str):
     cursor.execute("UPDATE users SET selected_gift = ? WHERE user_id = ?", (gift_code, user_id))
