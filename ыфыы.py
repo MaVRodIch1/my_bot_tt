@@ -287,6 +287,9 @@ def build_exchange_main_keyboard(user_id: int):
     builder.row(
         InlineKeyboardButton(text="💎 Бонус за ник", callback_data="nickname_bonus")
     )
+    builder.row(
+        InlineKeyboardButton(text="🏆 Лидерборд", callback_data="leaderboard")
+    )
 
     builder.row(
         InlineKeyboardButton(
@@ -383,6 +386,72 @@ async def daily_checkin(callback: CallbackQuery):
             [InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")]
         ])
     )
+@dp.callback_query(F.data == "leaderboard")
+async def leaderboard(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    # Топ 10
+    cursor.execute("""
+        SELECT user_id, username, total_earned
+        FROM users
+        ORDER BY total_earned DESC
+        LIMIT 10
+    """)
+    top_users = cursor.fetchall()
+
+    text = "🏆 <b>Топ 10 игроков за месяц</b>\n\n"
+
+    medals = ["🥇", "🥈", "🥉"]
+    rewards = ["15$", "10$", "5$"]
+
+    for i, (uid, username, total) in enumerate(top_users, start=1):
+
+        medal = medals[i-1] if i <= 3 else f"{i}."
+
+        masked = mask_username(username)
+        if not masked:
+            masked = mask_username(str(uid))
+
+        reward_text = f" — 🎁 {rewards[i-1]}" if i <= 3 else ""
+
+        text += f"{medal} {masked} — ⭐{total}{reward_text}\n"
+
+    # Определяем место пользователя
+    cursor.execute("""
+        SELECT COUNT(*) + 1
+        FROM users
+        WHERE total_earned > (
+            SELECT total_earned FROM users WHERE user_id = ?
+        )
+    """, (user_id,))
+    place = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT total_earned FROM users WHERE user_id = ?
+    """, (user_id,))
+    user_total = cursor.fetchone()[0]
+
+    text += (
+        f"\n━━━━━━━━━━━━━━━\n"
+        f"👤 Ваше место: <b>{place}</b>\n"
+        f"⭐ Ваш результат: <b>{user_total}</b>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")]
+        ])
+    )
+
+def mask_username(username: str) -> str:
+    if not username:
+        return None
+
+    if len(username) <= 2:
+        return username[0] + "*"
+
+    return username[0] + "*" * (len(username) - 2) + username[-1]
 
 @dp.callback_query(F.data == "my_balance")
 async def handle_my_balance(callback: CallbackQuery):
