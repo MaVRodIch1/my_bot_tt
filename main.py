@@ -266,6 +266,13 @@ def column_exists(cursor, table_name, column_name):
     cursor.execute(f"PRAGMA table_info({table_name})")
     return column_name in [row[1] for row in cursor.fetchall()]
 
+if not column_exists(cursor, "users", "last_message_time"):
+    cursor.execute("ALTER TABLE users ADD COLUMN last_message_time INTEGER DEFAULT 0")
+
+if not column_exists(cursor, "users", "spam_count"):
+    cursor.execute("ALTER TABLE users ADD COLUMN spam_count INTEGER DEFAULT 0")
+
+conn.commit()
 
 if not column_exists(cursor, "users", "nickname_bonus_last"):
     cursor.execute("ALTER TABLE users ADD COLUMN nickname_bonus_last INTEGER DEFAULT 0")
@@ -278,6 +285,10 @@ if not column_exists(cursor, "users", "checkin_streak"):
 
 if not column_exists(cursor, "users", "last_checkin_date"):
     cursor.execute("ALTER TABLE users ADD COLUMN last_checkin_date TEXT")
+if not column_exists(cursor, "users", "total_earned"):
+    cursor.execute("ALTER TABLE users ADD COLUMN total_earned INTEGER DEFAULT 0")
+
+conn.commit()
 
 conn.commit()
 
@@ -320,6 +331,9 @@ def build_exchange_main_keyboard(user_id: int):
     builder.row(
         InlineKeyboardButton(text="📅 Ежедневный чек-ин", callback_data="daily_checkin")
     )
+    builder.row(
+        InlineKeyboardButton(text="👤 Профиль", callback_data="profile")
+    )
 
     builder.row(
         InlineKeyboardButton(text="📦 Мои подарки / ⭐ Вывод", callback_data="my_withdraw")
@@ -338,6 +352,40 @@ def build_exchange_main_keyboard(user_id: int):
     )
 
     return builder.as_markup()
+
+
+@dp.callback_query(F.data == "profile")
+async def user_profile(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    cursor.execute("""
+        SELECT stars, total_earned, checkin_streak
+        FROM users WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        return
+
+    stars, total_earned, streak = row
+
+    level_name, level_rank = get_user_level(total_earned)
+
+    text = (
+        f"👤 <b>Ваш профиль</b>\n\n"
+        f"⭐ Баланс: <b>{stars}</b>\n"
+        f"💰 Всего заработано: <b>{total_earned}</b>\n"
+        f"🔥 Стрик: <b>{streak}/7</b>\n"
+        f"🏆 Уровень: <b>{level_name}</b>\n"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="exchange_menu")]
+        ])
+    )
+
 def build_exchange_cs_keyboard():
     builder = InlineKeyboardBuilder()
 
@@ -518,8 +566,8 @@ def get_user_stars(user_id: int) -> int:
 
 def add_stars(user_id: int, amount: int, action_type="manual", description=""):
     cursor.execute(
-        "UPDATE users SET stars = stars + ? WHERE user_id = ?",
-        (amount, user_id)
+        "UPDATE users SET stars = stars + ?, total_earned = total_earned + ? WHERE user_id = ?",
+        (amount, amount, user_id)
     )
 
     cursor.execute("""
@@ -534,6 +582,17 @@ def add_stars(user_id: int, amount: int, action_type="manual", description=""):
     ))
 
     conn.commit()
+def get_user_level(total_earned: int):
+    if total_earned >= 5000:
+        return "👑 Elite", 5
+    elif total_earned >= 2000:
+        return "💎 Diamond", 4
+    elif total_earned >= 1000:
+        return "🥇 Gold", 3
+    elif total_earned >= 300:
+        return "🥈 Silver", 2
+    else:
+        return "🥉 Bronze", 1
 
 
 def select_gift(user_id: int, gift_code: str):
@@ -2150,6 +2209,50 @@ async def nickname_bonus_refresh(callback: CallbackQuery):
     # Обновляем экран
     await nickname_bonus_status(callback)
 
+@dp.message()
+async def anti_spam_guard(message: Message):
+    user_id = message.from_user.id
+    now = int(time.time())
+
+    cursor.execute("""
+        SELECT last_message_time, spam_count
+        FROM users WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        return
+
+    last_time, spam_count = row
+
+    # если меньше 1 секунды между сообщениями
+    if now - last_time < 1:
+        spam_count += 1
+    else:
+        spam_count = 0
+
+    # если 5 быстрых сообщений подряд
+    if spam_count >= 5:
+        block_until = now + 60  # бан на 1 минуту
+
+        cursor.execute("""
+            UPDATE users
+            SET nickname_bonus_blocked_until = ?
+            WHERE user_id = ?
+        """, (block_until, user_id))
+
+        conn.commit()
+
+        await message.answer("🚫 Слишком много сообщений. Подожди 1 минуту.")
+        return
+
+    cursor.execute("""
+        UPDATE users
+        SET last_message_time = ?, spam_count = ?
+        WHERE user_id = ?
+    """, (now, spam_count, user_id))
+
+    conn.commit()
 
 
 if __name__ == "__main__":
